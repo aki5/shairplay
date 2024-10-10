@@ -481,10 +481,11 @@ raop_rtp_thread_udp(void *arg)
 		if(FD_ISSET(audio_fd, &wfds)){
 			const void *audiobuf;
 			int audiobuflen;
-			unsigned int timestamp;
+			unsigned int timestamp, ltime;
 			int no_resend = (raop_rtp->control_rport == 0);
 			audiobuf = raop_buffer_dequeue(raop_rtp->buffer, &audiobuflen, &timestamp, no_resend);
-			raop_rtp->callbacks.audio_process(raop_rtp->callbacks.cls, cb_data, audiobuf, audiobuflen, timestamp);
+			ltime = raop_buffer_latest_timestamp(raop_rtp->buffer);
+			raop_rtp->callbacks.audio_process(raop_rtp->callbacks.cls, cb_data, audiobuf, audiobuflen, timestamp, ltime);
 		}
 	}
 	logger_log(raop_rtp->logger, LOGGER_INFO, "Exiting UDP RAOP thread");
@@ -605,7 +606,8 @@ raop_rtp_thread_tcp(void *arg)
 			/* Decode the received frame */
 			unsigned int timestamp;
 			if ((audiobuf = raop_buffer_dequeue(raop_rtp->buffer, &audiobuflen, &timestamp, 1))) {
-				raop_rtp->callbacks.audio_process(raop_rtp->callbacks.cls, cb_data, audiobuf, audiobuflen, timestamp);
+				unsigned int ltime = raop_buffer_latest_timestamp(raop_rtp->buffer);
+				raop_rtp->callbacks.audio_process(raop_rtp->callbacks.cls, cb_data, audiobuf, audiobuflen, timestamp, ltime);
 			}
 		}
 	}

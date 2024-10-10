@@ -42,6 +42,7 @@ raop_buffer_t *raop_buffer_init(const char *rtpmap,
 const ALACSpecificConfig *raop_buffer_get_config(raop_buffer_t *raop_buffer);
 int raop_buffer_queue(raop_buffer_t *raop_buffer, unsigned char *data, unsigned short datalen, int use_seqnum);
 int raop_buffer_can_dequeue(raop_buffer_t *raop_buffer);
+unsigned int raop_buffer_latest_timestamp(raop_buffer_t *raop_buffer);
 const void *raop_buffer_dequeue(raop_buffer_t *raop_buffer, int *length, unsigned int *timestamp, int no_resend);
 void raop_buffer_handle_resends(raop_buffer_t *raop_buffer, raop_resend_cb_t resend_cb, void *opaque);
 void raop_buffer_flush(raop_buffer_t *raop_buffer, int next_seq);

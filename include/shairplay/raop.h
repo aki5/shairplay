@@ -32,7 +32,7 @@ struct raop_callbacks_s {
 
 	/* Compulsory callback functions */
 	void* (*audio_init)(void *cls, int bits, int channels, int samplerate, int *audio_fd);
-	void  (*audio_process)(void *cls, void *session, const void *buffer, int buflen, unsigned int timestamp);
+	void  (*audio_process)(void *cls, void *session, const void *buffer, int buflen, unsigned int timestamp, unsigned int ltime);
 	void  (*audio_destroy)(void *cls, void *session);
 
 	/* Optional but recommended callback functions */

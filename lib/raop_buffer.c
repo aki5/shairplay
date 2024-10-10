@@ -53,6 +53,8 @@ struct raop_buffer_s {
 	ALACSpecificConfig alacConfig;
 	alac_file *alac;
 
+	unsigned int latest_timestamp;
+
 	/* First and last seqnum */
 	int is_empty;
 	unsigned short first_seqnum;
@@ -285,6 +287,10 @@ raop_buffer_queue(raop_buffer_t *raop_buffer, unsigned char *data, unsigned shor
 	              (data[10] << 8) | data[11];
 	entry->available = 1;
 
+	// update timestamp only if this isn't out of order (or retransmit)
+	if(seqnum_cmp(seqnum, raop_buffer->last_seqnum) > 0)
+		raop_buffer->latest_timestamp = entry->timestamp;
+
 	/* Decrypt audio data */
 	encryptedlen = (datalen-12)/16*16;
 	AES_set_key(&aes_ctx, raop_buffer->aeskey, raop_buffer->aesiv, AES_MODE_128);
@@ -310,7 +316,7 @@ raop_buffer_queue(raop_buffer_t *raop_buffer, unsigned char *data, unsigned shor
 	return 1;
 }
 
-const int
+int
 raop_buffer_can_dequeue(raop_buffer_t *raop_buffer)
 {
 	short buflen;
@@ -329,6 +335,12 @@ raop_buffer_can_dequeue(raop_buffer_t *raop_buffer)
 		return 0;
 
 	return 1;
+}
+
+unsigned int
+raop_buffer_latest_timestamp(raop_buffer_t *raop_buffer)
+{
+	return raop_buffer->latest_timestamp;
 }
 
 const void *

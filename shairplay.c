@@ -146,7 +146,7 @@ audio_init(void *cls, int bits, int channels, int samplerate, int *audio_fd)
 }
 
 static void
-audio_process(void *cls, void *opaque, const void *abuf, int len, unsigned int timestamp)
+audio_process(void *cls, void *opaque, const void *abuf, int len, unsigned int timestamp, unsigned int ltime)
 {
 	ShairSession *sp = opaque;
 	const char *buf = abuf;
@@ -176,9 +176,12 @@ audio_process(void *cls, void *opaque, const void *abuf, int len, unsigned int t
 				fprintf(stderr, "pcmdev broken pipe nframes %d\n", nframes);
 			}
 
+			// we just wrote nframes after timestamp.
+			// the sample emanating from the speaker is (timestamp+nframes)-snd_pcm_delay.
+			// ... in theory.
 			long delay;
 			snd_pcm_delay(sp->pcmdev, &delay);
-			fprintf(stderr, "pcmdev delay %ld timestamp %u\n", delay, timestamp);
+			fprintf(stderr, "pcmdev delay %ld buffered %u\n", delay, ltime-timestamp+delay);
 		}
 		len -= nbytes;
 	}
