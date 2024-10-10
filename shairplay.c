@@ -35,19 +35,10 @@
 
 #include <alsa/asoundlib.h>
 
-//#include <ao/ao.h>
-
-#define VERSION "aki5-butchered"
-
-typedef struct {
+typedef struct ShairSession ShairSession;
+struct ShairSession {
 	snd_pcm_t *pcmdev;
-
-	int buffering;
-	int buflen;
-	char buffer[8192];
-
-	float volume;
-} shairplay_session_t;
+};
 
 
 static int running;
@@ -79,7 +70,10 @@ static snd_pcm_t *
 audio_open_device(int bits, int channels, int samplerate)
 {
 	snd_pcm_t *pcm;
-	snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0);
+
+	// nonblocking mode.. but we also don't want to buffer much. so we should
+	// slightly speed up or slow down to stay in the middle. to be implemented.
+	snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
 
 	snd_pcm_hw_params_t *hw_params;
 	snd_pcm_hw_params_malloc(&hw_params);
@@ -88,9 +82,9 @@ audio_open_device(int bits, int channels, int samplerate)
 	snd_pcm_hw_params_set_format(pcm, hw_params, SND_PCM_FORMAT_S16_LE);
 	snd_pcm_hw_params_set_channels(pcm, hw_params, 2);
 	snd_pcm_hw_params_set_rate(pcm, hw_params, 44100, 0);
-	// 10 buffers of 10 milliseconds
-	snd_pcm_hw_params_set_periods(pcm, hw_params, 10, 0);
-	snd_pcm_hw_params_set_period_time(pcm, hw_params, 10*1000, 0);
+	snd_pcm_hw_params_set_periods(pcm, hw_params, 13, 0);
+	snd_pcm_hw_params_set_period_time(pcm, hw_params, 8*1000, 0);
+	snd_pcm_hw_params_set_period_size(pcm, hw_params, 352, 0);
 	snd_pcm_hw_params(pcm, hw_params);
 	snd_pcm_hw_params_free(hw_params);
 
@@ -100,104 +94,74 @@ audio_open_device(int bits, int channels, int samplerate)
 static void *
 audio_init(void *cls, int bits, int channels, int samplerate)
 {
-	shairplay_session_t *session;
+	ShairSession *sp = malloc(sizeof sp[0]);
+	memset(sp, 0, sizeof sp[0]);
 
-	session = calloc(1, sizeof(shairplay_session_t));
-	assert(session);
-
-	session->pcmdev = audio_open_device(bits, channels, samplerate);
-	if (session->pcmdev == NULL) {
+	sp->pcmdev = audio_open_device(bits, channels, samplerate);
+	if (sp->pcmdev == NULL) {
 		printf("Error opening device %d\n", errno);
 		printf("The device might already be in use");
 	}
 
-	session->buffering = 1;
-	session->volume = 1.0f;
-	return session;
+	return sp;
 }
 
-static int
-audio_output(shairplay_session_t *session, const void *buffer, int buflen)
+static void
+audio_process(void *cls, void *opaque, const void *abuf, int len, unsigned int timestamp)
 {
+	ShairSession *sp = opaque;
+	const char *buf = abuf;
+
 	struct {
 		short left;
 		short right;
 	} frames[1024];
 
-	int nbytes = (buflen < sizeof frames) ? buflen : sizeof frames;
-	memcpy(frames, buffer, nbytes);
-
-	int nframes = nbytes / sizeof frames[0];
-	for(int i = 0; i < nframes; i++){
-		int sum = (frames[i].left + frames[i].right) / 2;
-		frames[i].left = sum;
-		frames[i].right = sum;
-	}
-
-	if(session->pcmdev != NULL){
-		int nwr = snd_pcm_writei(session->pcmdev, frames, nframes);
-		if(nwr == -EPIPE || nwr == -EINTR || nwr == -ESTRPIPE ){
-			snd_pcm_recover(session->pcmdev, nwr, 1);
-			fprintf(stderr, "pcmdev broken pipe nframes %d\n", nframes);
-			//session->buffering = 1;
+	while(len > 0){
+		int nbytes = (len < sizeof frames) ? len : sizeof frames;
+		memcpy(frames, buf, nbytes);
+		int nframes = nbytes / sizeof frames[0];
+		for(int i = 0; i < nframes; i++){
+			int sum = (frames[i].left + frames[i].right) / 2;
+			frames[i].left = sum;
+			frames[i].right = sum;
 		}
-		return 4*nwr;
-	}
+		if(sp->pcmdev != NULL){
+			int nwr = snd_pcm_writei(sp->pcmdev, frames, nframes);
+			if(nwr > 0 && nwr < nframes){
+				fprintf(stderr, "pcmdev short write: buffers full\n");
+			} else if(nwr == -EAGAIN){
+				fprintf(stderr, "pcmdev eagain: buffers full\n");
+			} else if(nwr == -EPIPE || nwr == -EINTR || nwr == -ESTRPIPE ){
+				snd_pcm_recover(sp->pcmdev, nwr, 0);
+				fprintf(stderr, "pcmdev broken pipe nframes %d\n", nframes);
+			}
 
-	return buflen;
-
-}
-
-static void
-audio_process(void *cls, void *opaque, const void *buffer, int buflen)
-{
-	shairplay_session_t *session = opaque;
-	int processed;
-
-	if (session->buffering) {
-		printf("Buffering...\n");
-		if (session->buflen+buflen < sizeof(session->buffer)) {
-			memcpy(session->buffer+session->buflen, buffer, buflen);
-			session->buflen += buflen;
-			return;
+			long delay;
+			snd_pcm_delay(sp->pcmdev, &delay);
+			fprintf(stderr, "pcmdev delay %ld timestamp %u\n", delay, timestamp);
 		}
-		session->buffering = 0;
-		printf("Finished buffering...\n");
-
-		processed = 0;
-		while (processed < session->buflen) {
-			processed += audio_output(session,
-			                          session->buffer+processed,
-			                          session->buflen-processed);
-		}
-		session->buflen = 0;
-	}
-
-	processed = 0;
-	while (processed < buflen) {
-		processed += audio_output(session,
-		                          buffer+processed,
-		                          buflen-processed);
+		len -= nbytes;
 	}
 }
 
 static void
 audio_destroy(void *cls, void *opaque)
 {
-	shairplay_session_t *session = opaque;
+	ShairSession *sp = opaque;
 
-	if(session->pcmdev != NULL){
-		snd_pcm_drain(session->pcmdev);
-		snd_pcm_close(session->pcmdev);
+	if(sp->pcmdev != NULL){
+		snd_pcm_drain(sp->pcmdev);
+		snd_pcm_close(sp->pcmdev);
 	}
-	free(session);
+	free(sp);
 }
 
 static void
 audio_set_volume(void *cls, void *opaque, float volume)
 {
-	shairplay_session_t *session = opaque;
-	session->volume = pow(10.0, 0.05*volume);
+	// can't do much here until I figure the mixer out.
+	//ShairSession *sp = opaque;
 }
 
 void
@@ -241,7 +205,6 @@ main(int argc, char *argv[])
 		return -1;
 	}
 
-
 	// last minute choices
 	unsigned short port = 5000;
 	char hwaddr[] = { 0x48, 0x5d, 0x60, 0x7c, 0xee, 0x22 };
@@ -264,6 +227,7 @@ main(int argc, char *argv[])
 
 	dnssd_register_raop(dnssd, apname, port, hwaddr, sizeof(hwaddr), 0);
 
+	// run until termination signal
 	running = 1;
 	while(running)
 		pause();
