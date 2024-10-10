@@ -49,17 +49,17 @@ OFILES=\
 all: shairplay
 
 lib/%.o: lib/%.c
-	$(CC) $(CFLAGS) -I.. -I../include/shairplay -c -o $@ $<
+	$(CC) $(CFLAGS) -Iinclude/shairplay -c -o $@ $<
 
 libshairplay.a: $(OFILES)
 	$(AR) r $@ $(OFILES)
 
 %.o: %.c
-	$(CC) $(CFLAGS) -I.. -I../include -c $<
+	$(CC) $(CFLAGS) -Iinclude -c $<
 
 shairplay: shairplay.o libshairplay.a
 	$(CC) -o $@ shairplay.o libshairplay.a -lm -lao -ldns_sd
 
 clean:
-	rm -f shairplay shairplay.o shairplay.a $(OFILES)
+	rm -f shairplay shairplay.o libshairplay.a $(OFILES)
 
