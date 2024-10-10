@@ -136,9 +136,10 @@ audio_output(shairplay_session_t *session, const void *buffer, int buflen)
 
 	if(session->pcmdev != NULL){
 		int nwr = snd_pcm_writei(session->pcmdev, frames, nframes);
-		if(nwr == -EPIPE){
-			fprintf(stderr, "pcmdev underrun\n");
-			session->buffering = 1;
+		if(nwr == -EPIPE || nwr == -EINTR || nwr == -ESTRPIPE ){
+			snd_pcm_recover(session->pcmdev, nwr, 1);
+			fprintf(stderr, "pcmdev broken pipe nframes %d\n", nframes);
+			//session->buffering = 1;
 		}
 		return 4*nwr;
 	}
