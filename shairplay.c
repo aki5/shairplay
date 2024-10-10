@@ -90,7 +90,7 @@ audio_open_device(int bits, int channels, int samplerate)
 	snd_pcm_hw_params_set_rate(pcm, hw_params, 44100, 0);
 	// 10 buffers of 10 milliseconds
 	snd_pcm_hw_params_set_periods(pcm, hw_params, 10, 0);
-	snd_pcm_hw_params_set_period_time(pcm, hw_params, 100*1000, 0);
+	snd_pcm_hw_params_set_period_time(pcm, hw_params, 10*1000, 0);
 	snd_pcm_hw_params(pcm, hw_params);
 	snd_pcm_hw_params_free(hw_params);
 
