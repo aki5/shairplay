@@ -183,16 +183,13 @@ audio_output(shairplay_session_t *session, const void *buffer, int buflen)
 
 	tmpbuflen = (buflen > sizeof(tmpbuf)) ? sizeof(tmpbuf) : buflen;
 	memcpy(tmpbuf, buffer, tmpbuflen);
-	if (ao_is_big_endian()) {
-		for (i=0; i<tmpbuflen/2; i++) {
-			char tmpch = tmpbuf[i*2];
-			tmpbuf[i*2] = tmpbuf[i*2+1];
-			tmpbuf[i*2+1] = tmpch;
-		}
-	}
+
+	// let's make it mono for now
 	shortbuf = (short *)tmpbuf;
-	for (i=0; i<tmpbuflen/2; i++) {
-		shortbuf[i] = shortbuf[i] * session->volume;
+	for (i=0; i<tmpbuflen/2; i += 2) {
+		int sum = (shortbuf[i] + shortbuf[i+1]) / 2;
+		shortbuf[i] = sum;
+		shortbuf[i+1] = sum;
 	}
 	if (session->device) {
 		ao_play(session->device, tmpbuf, tmpbuflen);
