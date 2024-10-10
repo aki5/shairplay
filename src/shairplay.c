@@ -37,7 +37,7 @@
 
 #include <ao/ao.h>
 
-#include "config.h"
+#define VERSION "aki5-butchered"
 
 typedef struct {
 	char apname[56];
