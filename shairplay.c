@@ -35,6 +35,8 @@
 
 #include <alsa/asoundlib.h>
 
+#define nelem(x) sizeof(x)/sizeof(x[0])
+
 typedef struct ShairSession ShairSession;
 struct ShairSession {
 	snd_pcm_t *pcmdev;
@@ -92,7 +94,7 @@ audio_open_device(int bits, int channels, int samplerate)
 }
 
 static void *
-audio_init(void *cls, int bits, int channels, int samplerate)
+audio_init(void *cls, int bits, int channels, int samplerate, int *audio_fd)
 {
 	ShairSession *sp = malloc(sizeof sp[0]);
 	memset(sp, 0, sizeof sp[0]);
@@ -101,6 +103,43 @@ audio_init(void *cls, int bits, int channels, int samplerate)
 	if (sp->pcmdev == NULL) {
 		printf("Error opening device %d\n", errno);
 		printf("The device might already be in use");
+	}
+
+	// the rtp thread uses select, so we dig into the poll descriptors,
+	// find the output fd and return it. also spit out as much info as possible
+
+	struct pollfd pollfds[8];
+	int npoll = snd_pcm_poll_descriptors(sp->pcmdev, pollfds, nelem(pollfds));
+
+	// just for debug purposes.
+	static int pollflags[] = {
+		POLLIN,
+		POLLPRI,
+		POLLOUT,
+		POLLERR,
+		POLLHUP,
+		POLLNVAL,
+	};
+
+	static char *pollnames[] = {
+		"POLLIN",
+		"POLLPRI",
+		"POLLOUT",
+		"POLLERR",
+		"POLLHUP",
+		"POLLNVAL"
+	};
+
+	for(int i = 0; i < npoll; i++){
+		fprintf(stderr, "audio_init: pollfds[%d]: fd %d", i, pollfds[i].fd);
+		for(int fi = 0; fi < nelem(pollflags); fi++)
+			if(pollfds[i].events & pollflags[fi])
+				fprintf(stderr, " %s", pollnames[fi]);
+		if(pollfds[i].events & POLLOUT){
+			fprintf(stderr, " - passing this to rtp thread");
+			*audio_fd = pollfds[i].fd;
+		}
+		fprintf(stderr, "\n");
 	}
 
 	return sp;

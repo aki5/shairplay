@@ -310,6 +310,27 @@ raop_buffer_queue(raop_buffer_t *raop_buffer, unsigned char *data, unsigned shor
 	return 1;
 }
 
+const int
+raop_buffer_can_dequeue(raop_buffer_t *raop_buffer)
+{
+	short buflen;
+	raop_buffer_entry_t *entry;
+
+	/* Calculate number of entries in the current buffer */
+	buflen = seqnum_cmp(raop_buffer->last_seqnum, raop_buffer->first_seqnum)+1;
+
+	/* Cannot dequeue from empty buffer */
+	if(raop_buffer->is_empty || buflen <= 0)
+		return 0;
+
+	/* Get the first buffer entry for inspection */
+	entry = &raop_buffer->entries[raop_buffer->first_seqnum % RAOP_BUFFER_LENGTH];
+	if(!entry->available)
+		return 0;
+
+	return 1;
+}
+
 const void *
 raop_buffer_dequeue(raop_buffer_t *raop_buffer, int *length, unsigned int *timestamp, int no_resend)
 {

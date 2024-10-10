@@ -373,6 +373,7 @@ raop_rtp_thread_udp(void *arg)
 	unsigned int packetlen;
 	struct sockaddr_storage saddr;
 	socklen_t saddrlen;
+	int audio_fd = -1;
 
 	const ALACSpecificConfig *config;
 	void *cb_data = NULL;
@@ -383,10 +384,11 @@ raop_rtp_thread_udp(void *arg)
 	cb_data = raop_rtp->callbacks.audio_init(raop_rtp->callbacks.cls,
 	                               config->bitDepth,
 	                               config->numChannels,
-	                               config->sampleRate);
+	                               config->sampleRate,
+					&audio_fd);
 
 	while(1) {
-		fd_set rfds;
+		fd_set rfds, wfds;
 		struct timeval tv;
 		int nfds, ret;
 
@@ -395,7 +397,7 @@ raop_rtp_thread_udp(void *arg)
 			break;
 		}
 
-		/* Set timeout value to 5ms */
+		/* Set timeout value to 5ms... why?*/
 		tv.tv_sec = 0;
 		tv.tv_usec = 5000;
 
@@ -406,12 +408,22 @@ raop_rtp_thread_udp(void *arg)
 		if (raop_rtp->dsock >= nfds)
 			nfds = raop_rtp->dsock+1;
 
-		/* Set rfds and call select */
+		// check all sockets for read
 		FD_ZERO(&rfds);
 		FD_SET(raop_rtp->csock, &rfds);
 		FD_SET(raop_rtp->tsock, &rfds);
 		FD_SET(raop_rtp->dsock, &rfds);
-		ret = select(nfds, &rfds, NULL, NULL, &tv);
+
+		// check for audio write if there's something to dequeue
+		FD_ZERO(&wfds);
+		if(raop_buffer_can_dequeue(raop_rtp->buffer)){
+			if(audio_fd >= nfds)
+				nfds = audio_fd+1;
+			FD_SET(audio_fd, &wfds);
+		}
+
+		// block until there's something to do.
+		ret = select(nfds, &rfds, &wfds, NULL, &tv);
 		if (ret == 0) {
 			/* Timeout happened */
 			continue;
@@ -420,7 +432,7 @@ raop_rtp_thread_udp(void *arg)
 			break;
 		}
 
-		if (FD_ISSET(raop_rtp->csock, &rfds)) {
+		if(FD_ISSET(raop_rtp->csock, &rfds)){
 			saddrlen = sizeof(saddr);
 			packetlen = recvfrom(raop_rtp->csock, (char *)packet, sizeof(packet), 0,
 			                     (struct sockaddr *)&saddr, &saddrlen);
@@ -439,9 +451,13 @@ raop_rtp_thread_udp(void *arg)
 					assert(ret >= 0);
 				}
 			}
-		} else if (FD_ISSET(raop_rtp->tsock, &rfds)) {
+		}
+
+		if(FD_ISSET(raop_rtp->tsock, &rfds)){
 			logger_log(raop_rtp->logger, LOGGER_INFO, "Would have timing packet in queue");
-		} else if (FD_ISSET(raop_rtp->dsock, &rfds)) {
+		}
+
+		if(FD_ISSET(raop_rtp->dsock, &rfds)){
 			saddrlen = sizeof(saddr);
 			packetlen = recvfrom(raop_rtp->dsock, (char *)packet, sizeof(packet), 0,
 			                     (struct sockaddr *)&saddr, &saddrlen);
@@ -453,19 +469,22 @@ raop_rtp_thread_udp(void *arg)
 				ret = raop_buffer_queue(raop_rtp->buffer, packet, packetlen, 1);
 				assert(ret >= 0);
 
-				/* Decode all frames in queue */
-				const void *audiobuf;
-				int audiobuflen;
-				unsigned int timestamp;
-				while ((audiobuf = raop_buffer_dequeue(raop_rtp->buffer, &audiobuflen, &timestamp, no_resend))) {
-					raop_rtp->callbacks.audio_process(raop_rtp->callbacks.cls, cb_data, audiobuf, audiobuflen, timestamp);
-				}
 
 				/* Handle possible resend requests */
 				if (!no_resend) {
 					raop_buffer_handle_resends(raop_rtp->buffer, raop_rtp_resend_callback, raop_rtp);
 				}
 			}
+		}
+
+		// if we can write to the audio device, dequeue and output one airplay frame
+		if(FD_ISSET(audio_fd, &wfds)){
+			const void *audiobuf;
+			int audiobuflen;
+			unsigned int timestamp;
+			int no_resend = (raop_rtp->control_rport == 0);
+			audiobuf = raop_buffer_dequeue(raop_rtp->buffer, &audiobuflen, &timestamp, no_resend);
+			raop_rtp->callbacks.audio_process(raop_rtp->callbacks.cls, cb_data, audiobuf, audiobuflen, timestamp);
 		}
 	}
 	logger_log(raop_rtp->logger, LOGGER_INFO, "Exiting UDP RAOP thread");
@@ -478,7 +497,7 @@ static THREAD_RETVAL
 raop_rtp_thread_tcp(void *arg)
 {
 	raop_rtp_t *raop_rtp = arg;
-	int stream_fd = -1;
+	int stream_fd = -1, audio_fd = -1;
 	unsigned char packet[RAOP_PACKET_LEN];
 	unsigned int packetlen = 0;
 
@@ -491,7 +510,8 @@ raop_rtp_thread_tcp(void *arg)
 	cb_data = raop_rtp->callbacks.audio_init(raop_rtp->callbacks.cls,
 	                               config->bitDepth,
 	                               config->numChannels,
-	                               config->sampleRate);
+	                               config->sampleRate,
+					&audio_fd);
 
 	while (1) {
 		fd_set rfds;
