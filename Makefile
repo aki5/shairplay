@@ -58,7 +58,7 @@ libshairplay.a: $(OFILES)
 	$(CC) $(CFLAGS) -Iinclude -c $<
 
 shairplay: shairplay.o libshairplay.a
-	$(CC) -o $@ shairplay.o libshairplay.a -lm -lao -ldns_sd
+	$(CC) -o $@ shairplay.o libshairplay.a -lm -lasound -ldns_sd
 
 clean:
 	rm -f shairplay shairplay.o libshairplay.a $(OFILES)

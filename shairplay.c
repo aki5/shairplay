@@ -27,31 +27,20 @@
 #include <string.h>
 #include <unistd.h>
 #include <assert.h>
+#include <signal.h>
 
-#ifdef WIN32
-# include <windows.h>
-#endif
 
 #include <shairplay/dnssd.h>
 #include <shairplay/raop.h>
 
-#include <ao/ao.h>
+#include <alsa/asoundlib.h>
+
+//#include <ao/ao.h>
 
 #define VERSION "aki5-butchered"
 
 typedef struct {
-	char apname[56];
-	char password[56];
-	unsigned short port;
-	char hwaddr[6];
-
-	char ao_driver[56];
-	char ao_devicename[56];
-	char ao_deviceid[16];
-} shairplay_options_t;
-
-typedef struct {
-	ao_device *device;
+	snd_pcm_t *pcmdev;
 
 	int buffering;
 	int buflen;
@@ -63,9 +52,7 @@ typedef struct {
 
 static int running;
 
-#ifndef WIN32
 
-#include <signal.h>
 static void
 signal_handler(int sig)
 {
@@ -88,83 +75,38 @@ init_signals(void)
 	sigaction(SIGTERM, &sigact, NULL);
 }
 
-#endif
-
-
-static int
-parse_hwaddr(const char *str, char *hwaddr, int hwaddrlen)
+static snd_pcm_t *
+audio_open_device(int bits, int channels, int samplerate)
 {
-	int slen, i;
+	snd_pcm_t *pcm;
+	snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0);
 
-	slen = 3*hwaddrlen-1;
-	if (strlen(str) != slen) {
-		return 1;
-	}
-	for (i=0; i<slen; i++) {
-		if (str[i] == ':' && (i%3 == 2)) {
-			continue;
-		}
-		if (str[i] >= '0' && str[i] <= '9') {
-			continue;
-		}
-		if (str[i] >= 'a' && str[i] <= 'f') {
-			continue;
-		}
-		return 1;
-	}
-	for (i=0; i<hwaddrlen; i++) {
-		hwaddr[i] = (char) strtol(str+(i*3), NULL, 16);
-	}
-	return 0;
-}
+	snd_pcm_hw_params_t *hw_params;
+	snd_pcm_hw_params_malloc(&hw_params);
+	snd_pcm_hw_params_any(pcm, hw_params);
+	snd_pcm_hw_params_set_access(pcm, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
+	snd_pcm_hw_params_set_format(pcm, hw_params, SND_PCM_FORMAT_S16_LE);
+	snd_pcm_hw_params_set_channels(pcm, hw_params, 2);
+	snd_pcm_hw_params_set_rate(pcm, hw_params, 44100, 0);
+	// 10 buffers of 10 milliseconds
+	snd_pcm_hw_params_set_periods(pcm, hw_params, 10, 0);
+	snd_pcm_hw_params_set_period_time(pcm, hw_params, 100*1000, 0);
+	snd_pcm_hw_params(pcm, hw_params);
+	snd_pcm_hw_params_free(hw_params);
 
-static ao_device *
-audio_open_device(shairplay_options_t *opt, int bits, int channels, int samplerate)
-{
-	ao_device *device = NULL;
-	ao_option *ao_options = NULL;
-	ao_sample_format format;
-	int driver_id;
-
-	/* Get the libao driver ID */
-	if (strlen(opt->ao_driver)) {
-		driver_id = ao_driver_id(opt->ao_driver);
-	} else {
-		driver_id = ao_default_driver_id();
-	}
-
-	/* Add all available libao options */
-	if (strlen(opt->ao_devicename)) {
-		ao_append_option(&ao_options, "dev", opt->ao_devicename);
-	}
-	if (strlen(opt->ao_deviceid)) {
-		ao_append_option(&ao_options, "id", opt->ao_deviceid);
-	}
-
-	/* Set audio format */
-	memset(&format, 0, sizeof(format));
-	format.bits = bits;
-	format.channels = channels;
-	format.rate = samplerate;
-	format.byte_format = AO_FMT_NATIVE;
-
-	/* Try opening the actual device */
-	device = ao_open_live(driver_id, &format, ao_options);
-	ao_free_options(ao_options);
-	return device;
+	return pcm;
 }
 
 static void *
 audio_init(void *cls, int bits, int channels, int samplerate)
 {
-	shairplay_options_t *options = cls;
 	shairplay_session_t *session;
 
 	session = calloc(1, sizeof(shairplay_session_t));
 	assert(session);
 
-	session->device = audio_open_device(options, bits, channels, samplerate);
-	if (session->device == NULL) {
+	session->pcmdev = audio_open_device(bits, channels, samplerate);
+	if (session->pcmdev == NULL) {
 		printf("Error opening device %d\n", errno);
 		printf("The device might already be in use");
 	}
@@ -177,24 +119,32 @@ audio_init(void *cls, int bits, int channels, int samplerate)
 static int
 audio_output(shairplay_session_t *session, const void *buffer, int buflen)
 {
-	short *shortbuf;
-	char tmpbuf[4096];
-	int tmpbuflen, i;
+	struct {
+		short left;
+		short right;
+	} frames[1024];
 
-	tmpbuflen = (buflen > sizeof(tmpbuf)) ? sizeof(tmpbuf) : buflen;
-	memcpy(tmpbuf, buffer, tmpbuflen);
+	int nbytes = (buflen < sizeof frames) ? buflen : sizeof frames;
+	memcpy(frames, buffer, nbytes);
 
-	// let's make it mono for now
-	shortbuf = (short *)tmpbuf;
-	for (i=0; i<tmpbuflen/2; i += 2) {
-		int sum = (shortbuf[i] + shortbuf[i+1]) / 2;
-		shortbuf[i] = sum;
-		shortbuf[i+1] = sum;
+	int nframes = nbytes / sizeof frames[0];
+	for(int i = 0; i < nframes; i++){
+		int sum = (frames[i].left + frames[i].right) / 2;
+		frames[i].left = sum;
+		frames[i].right = sum;
 	}
-	if (session->device) {
-		ao_play(session->device, tmpbuf, tmpbuflen);
+
+	if(session->pcmdev != NULL){
+		int nwr = snd_pcm_writei(session->pcmdev, frames, nframes);
+		if(nwr == -EPIPE){
+			fprintf(stderr, "pcmdev underrun\n");
+			session->buffering = 1;
+		}
+		return 4*nwr;
 	}
-	return tmpbuflen;
+
+	return buflen;
+
 }
 
 static void
@@ -235,8 +185,9 @@ audio_destroy(void *cls, void *opaque)
 {
 	shairplay_session_t *session = opaque;
 
-	if (session->device) {
-		ao_close(session->device);
+	if(session->pcmdev != NULL){
+		snd_pcm_drain(session->pcmdev);
+		snd_pcm_close(session->pcmdev);
 	}
 	free(session);
 }
@@ -248,117 +199,55 @@ audio_set_volume(void *cls, void *opaque, float volume)
 	session->volume = pow(10.0, 0.05*volume);
 }
 
-static int
-parse_options(shairplay_options_t *opt, int argc, char *argv[])
+void
+audio_set_progress(void *arg1, void *arg2, unsigned int start, unsigned int curr, unsigned int end)
 {
-	const char default_hwaddr[] = { 0x48, 0x5d, 0x60, 0x7c, 0xee, 0x22 };
-
-	char *path = argv[0];
-	char *arg;
-
-	/* Set default values for apname and port */
-	strncpy(opt->apname, "Shairplay", sizeof(opt->apname)-1);
-	opt->port = 5000;
-	memcpy(opt->hwaddr, default_hwaddr, sizeof(opt->hwaddr));
-
-	while ((arg = *++argv)) {
-		if (!strcmp(arg, "-a")) {
-			strncpy(opt->apname, *++argv, sizeof(opt->apname)-1);
-		} else if (!strncmp(arg, "--apname=", 9)) {
-			strncpy(opt->apname, arg+9, sizeof(opt->apname)-1);
-		} else if (!strcmp(arg, "-p")) {
-			strncpy(opt->password, *++argv, sizeof(opt->password)-1);
-		} else if (!strncmp(arg, "--password=", 11)) {
-			strncpy(opt->password, arg+11, sizeof(opt->password)-1);
-		} else if (!strcmp(arg, "-o")) {
-			opt->port = atoi(*++argv);
-		} else if (!strncmp(arg, "--server_port=", 14)) {
-			opt->port = atoi(arg+14);
-		} else if (!strncmp(arg, "--hwaddr=", 9)) {
-			if (parse_hwaddr(arg+9, opt->hwaddr, sizeof(opt->hwaddr))) {
-				fprintf(stderr, "Invalid format given for hwaddr, aborting...\n");
-				fprintf(stderr, "Please use hwaddr format: 01:45:89:ab:cd:ef\n");
-				return 1;
-			}
-		} else if (!strncmp(arg, "--ao_driver=", 12)) {
-			strncpy(opt->ao_driver, arg+12, sizeof(opt->ao_driver)-1);
-		} else if (!strncmp(arg, "--ao_devicename=", 16)) {
-			strncpy(opt->ao_devicename, arg+16, sizeof(opt->ao_devicename)-1);
-		} else if (!strncmp(arg, "--ao_deviceid=", 14)) {
-			strncpy(opt->ao_deviceid, arg+14, sizeof(opt->ao_deviceid)-1);
-		} else if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) {
-			fprintf(stderr, "Shairplay version %s\n", VERSION);
-			fprintf(stderr, "Usage: %s [OPTION...]\n", path);
-			fprintf(stderr, "\n");
-			fprintf(stderr, "  -a, --apname=AirPort            Sets Airport name\n");
-			fprintf(stderr, "  -p, --password=secret           Sets password\n");
-			fprintf(stderr, "  -o, --server_port=5000          Sets port for RAOP service\n");
-			fprintf(stderr, "      --hwaddr=address            Sets the MAC address, useful if running multiple instances\n");
-			fprintf(stderr, "      --ao_driver=driver          Sets the ao driver (optional)\n");
-			fprintf(stderr, "      --ao_devicename=devicename  Sets the ao device name (optional)\n");
-			fprintf(stderr, "      --ao_deviceid=id            Sets the ao device id (optional)\n");
-			fprintf(stderr, "  -h, --help                      This help\n");
-			fprintf(stderr, "\n");
-			return 1;
-		}
-	}
-
-	return 0;
+	fprintf(stderr, "progress %u/%u/%u\n", start, curr, end);
 }
 
 int
 main(int argc, char *argv[])
 {
-	shairplay_options_t options;
-	ao_device *device = NULL;
 
 	dnssd_t *dnssd;
 	raop_t *raop;
 	raop_callbacks_t raop_cbs;
-	char *password = NULL;
 
 	int error;
 
-#ifndef WIN32
 	init_signals();
-#endif
 
-	memset(&options, 0, sizeof(options));
-	if (parse_options(&options, argc, argv)) {
-		return 0;
-	}
-
-	ao_initialize();
-
-	device = audio_open_device(&options, 16, 2, 44100);
-	if (device == NULL) {
+	snd_pcm_t *pcmdev = audio_open_device(16, 2, 44100);
+	if(pcmdev == NULL) {
 		fprintf(stderr, "Error opening audio device %d\n", errno);
 		fprintf(stderr, "Please check your libao settings and try again\n");
 		return -1;
-	} else {
-		ao_close(device);
-		device = NULL;
 	}
+	snd_pcm_drain(pcmdev);
+	snd_pcm_close(pcmdev);
 
 	memset(&raop_cbs, 0, sizeof(raop_cbs));
-	raop_cbs.cls = &options;
 	raop_cbs.audio_init = audio_init;
 	raop_cbs.audio_process = audio_process;
 	raop_cbs.audio_destroy = audio_destroy;
 	raop_cbs.audio_set_volume = audio_set_volume;
+	raop_cbs.audio_set_progress = audio_set_progress;
 
 	raop = raop_init_from_keyfile(10, &raop_cbs, "airport.key", NULL);
-	if (raop == NULL) {
+	if(raop == NULL) {
 		fprintf(stderr, "Could not initialize the RAOP service\n");
 		fprintf(stderr, "Please make sure the airport.key file is in the current directory.\n");
 		return -1;
 	}
 
-	if (strlen(options.password)) {
-		password = options.password;
-	}
+
+	// last minute choices
+	unsigned short port = 5000;
+	char hwaddr[] = { 0x48, 0x5d, 0x60, 0x7c, 0xee, 0x22 };
+	char *apname = "barry";
+	char *password = NULL;
 	raop_set_log_level(raop, RAOP_LOG_DEBUG);
-	raop_start(raop, &options.port, options.hwaddr, sizeof(options.hwaddr), password);
+	raop_start(raop, &port, hwaddr, sizeof(hwaddr), password);
 
 	error = 0;
 	dnssd = dnssd_init(&error);
@@ -372,24 +261,17 @@ main(int argc, char *argv[])
 		return -1;
 	}
 
-	dnssd_register_raop(dnssd, options.apname, options.port, options.hwaddr, sizeof(options.hwaddr), 0);
+	dnssd_register_raop(dnssd, apname, port, hwaddr, sizeof(hwaddr), 0);
 
 	running = 1;
-	while (running) {
-#ifndef WIN32
-		sleep(1);
-#else
-		Sleep(1000);
-#endif
-	}
+	while(running)
+		pause();
 
 	dnssd_unregister_raop(dnssd);
 	dnssd_destroy(dnssd);
 
 	raop_stop(raop);
 	raop_destroy(raop);
-
-	ao_shutdown();
 
 	return 0;
 }
