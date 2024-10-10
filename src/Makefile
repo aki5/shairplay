@@ -61,5 +61,5 @@ shairplay: shairplay.o libshairplay.a
 	$(CC) -o $@ shairplay.o libshairplay.a -lm -lao -ldns_sd
 
 clean:
-	rm -f shairplay shairplay.o $(OFILES)
+	rm -f shairplay shairplay.o shairplay.a $(OFILES)
 
