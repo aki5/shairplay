@@ -63,3 +63,51 @@ shairplay: shairplay.o libshairplay.a
 clean:
 	rm -f shairplay shairplay.o libshairplay.a $(OFILES)
 
+HFILES=\
+	 ./include/shairplay/dnssd.h \
+	 ./include/shairplay/raop.h \
+	 ./lib/utils.h \
+	 ./lib/fairplay.h \
+	 ./lib/rsapem.h \
+	 ./lib/raop_rtp.h \
+	 ./lib/http_request.h \
+	 ./lib/sdp.h \
+	 ./lib/global.h \
+	 ./lib/raop_handlers.h \
+	 ./lib/pairing.h \
+	 ./lib/alac/alac.h \
+	 ./lib/alac/stdint_win.h \
+	 ./lib/plist.h \
+	 ./lib/compat.h \
+	 ./lib/ed25519/sc.h \
+	 ./lib/ed25519/ed25519.h \
+	 ./lib/ed25519/ge.h \
+	 ./lib/ed25519/precomp_data.h \
+	 ./lib/ed25519/fixedint.h \
+	 ./lib/ed25519/sha512.h \
+	 ./lib/ed25519/fe.h \
+	 ./lib/raop_buffer.h \
+	 ./lib/aes_ctr.h \
+	 ./lib/playfair/omg_hax.h \
+	 ./lib/playfair/playfair.h \
+	 ./lib/base64.h \
+	 ./lib/sockets.h \
+	 ./lib/httpd.h \
+	 ./lib/digest.h \
+	 ./lib/memalign.h \
+	 ./lib/logger.h \
+	 ./lib/threads.h \
+	 ./lib/crypto/bigint_impl.h \
+	 ./lib/crypto/os_port.h \
+	 ./lib/crypto/config.h \
+	 ./lib/crypto/bigint.h \
+	 ./lib/crypto/crypto.h \
+	 ./lib/http_parser.h \
+	 ./lib/rsakey.h \
+	 ./lib/dnssdint.h \
+	 ./lib/netutils.h \
+	 ./lib/http_response.h \
+	 ./lib/curve25519/curve25519.h \
+
+$(OFILES): $(HFILES)
+
