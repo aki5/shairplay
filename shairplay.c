@@ -179,11 +179,15 @@ audio_process(void *cls, void *opaque, const void *abuf, int len, unsigned int t
 			// we just wrote nframes after timestamp.
 			// the sample emanating from the speaker is (timestamp+nframes)-snd_pcm_delay.
 			// ... in theory.
+			// we've written upto timestamp+532, last byte in the buffer is ltime+532
+			// so there's (ltime+532)-(timestamp+532) = ltime-timestamp bytes in the buffer
+			// there's delay bytes in the hardware.
 			long delay;
 			snd_pcm_delay(sp->pcmdev, &delay);
-			fprintf(stderr, "pcmdev delay %ld buffered %u\n", delay, ltime-timestamp+delay);
+			fprintf(stderr, "pcmdev pcmdelay %ld buffered %u\n", delay, ltime-timestamp);
 		}
 		len -= nbytes;
+		buf += nbytes;
 	}
 }
 
