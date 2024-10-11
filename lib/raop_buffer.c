@@ -25,7 +25,7 @@
 #include "crypto/crypto.h"
 #include "alac/alac.h"
 
-#define RAOP_BUFFER_LENGTH 32
+#define RAOP_BUFFER_LENGTH 256
 
 typedef struct {
 	/* Packet available */
@@ -179,8 +179,7 @@ raop_buffer_init(const char *rtpmap,
 	audio_buffer_size = alacConfig->frameLength *
 	                    alacConfig->numChannels *
 	                    alacConfig->bitDepth/8;
-	raop_buffer->buffer_size = audio_buffer_size *
-	                           RAOP_BUFFER_LENGTH;
+	raop_buffer->buffer_size = audio_buffer_size * RAOP_BUFFER_LENGTH;
 	raop_buffer->buffer = malloc(raop_buffer->buffer_size);
 	if (!raop_buffer->buffer) {
 		free(raop_buffer);
@@ -316,6 +315,7 @@ raop_buffer_queue(raop_buffer_t *raop_buffer, unsigned char *data, unsigned shor
 	return 1;
 }
 
+// number of bytes that can be consecutively dequeued at this time.
 int
 raop_buffer_can_dequeue(raop_buffer_t *raop_buffer)
 {
@@ -329,12 +329,15 @@ raop_buffer_can_dequeue(raop_buffer_t *raop_buffer)
 	if(raop_buffer->is_empty || buflen <= 0)
 		return 0;
 
-	/* Get the first buffer entry for inspection */
-	entry = &raop_buffer->entries[raop_buffer->first_seqnum % RAOP_BUFFER_LENGTH];
-	if(!entry->available)
-		return 0;
+	int nbytes = 0;
+	for(unsigned short seq = raop_buffer->first_seqnum; seqnum_cmp(seq, raop_buffer->last_seqnum)<0; seq++){
+		entry = &raop_buffer->entries[seq % RAOP_BUFFER_LENGTH];
+		if(!entry->available)
+			break;
+		nbytes += entry->audio_buffer_len;
+	}
 
-	return 1;
+	return nbytes;
 }
 
 unsigned int

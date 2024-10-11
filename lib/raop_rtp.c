@@ -382,11 +382,13 @@ raop_rtp_thread_udp(void *arg)
 
 	config = raop_buffer_get_config(raop_rtp->buffer);
 	cb_data = raop_rtp->callbacks.audio_init(raop_rtp->callbacks.cls,
-	                               config->bitDepth,
-	                               config->numChannels,
-	                               config->sampleRate,
-					&audio_fd);
+				config->bitDepth,
+				config->numChannels,
+				config->sampleRate,
+				&audio_fd);
 
+	int buffering = 1;
+	int buffer_ms = 250;
 	while(1) {
 		fd_set rfds, wfds;
 		struct timeval tv;
@@ -416,10 +418,20 @@ raop_rtp_thread_udp(void *arg)
 
 		// check for audio write if there's something to dequeue
 		FD_ZERO(&wfds);
-		if(raop_buffer_can_dequeue(raop_rtp->buffer)){
-			if(audio_fd >= nfds)
-				nfds = audio_fd+1;
-			FD_SET(audio_fd, &wfds);
+		if(buffering){
+			int nbytes = raop_buffer_can_dequeue(raop_rtp->buffer);
+			if(nbytes >= (44100*2*2*buffer_ms) / 1000){
+				buffering = 0;
+			} else {
+				fprintf(stderr, "raop_rtp_thread_udp: has %d bytes, buffering more\n", nbytes);
+			}
+		}
+		if(!buffering){
+			if(raop_buffer_can_dequeue(raop_rtp->buffer) > 0){
+				if(audio_fd >= nfds)
+					nfds = audio_fd+1;
+				FD_SET(audio_fd, &wfds);
+			}
 		}
 
 		// block until there's something to do.
@@ -428,6 +440,8 @@ raop_rtp_thread_udp(void *arg)
 			/* Timeout happened */
 			continue;
 		} else if (ret == -1) {
+			fprintf(stderr, "raop_rtp_thread_udp: select error %s\n", strerror(errno));
+			fprintf(stderr, "exiting\n");
 			/* FIXME: Error happened */
 			break;
 		}
@@ -469,8 +483,8 @@ raop_rtp_thread_udp(void *arg)
 				ret = raop_buffer_queue(raop_rtp->buffer, packet, packetlen, 1);
 				assert(ret >= 0);
 
-
-				/* Handle possible resend requests */
+				// there is lots of room for improvement in the ARQ logic if
+				// raop_buffer_handle_resends()
 				if (!no_resend) {
 					raop_buffer_handle_resends(raop_rtp->buffer, raop_rtp_resend_callback, raop_rtp);
 				}
