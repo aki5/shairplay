@@ -28,6 +28,10 @@
 
 #define NO_FLUSH (-42)
 
+typedef unsigned char uchar;
+typedef unsigned short ushort;
+typedef unsigned int uint;
+
 struct raop_rtp_s {
 	logger_t *logger;
 	raop_callbacks_t callbacks;
@@ -79,6 +83,49 @@ struct raop_rtp_s {
 	socklen_t control_saddr_len;
 	unsigned short control_seqnum;
 };
+
+static unsigned long long
+get64be(uchar *buf)
+{
+	unsigned long long val = buf[0];
+	for(int i = 1; i < 8; i++)
+		val = (val << 8) | buf[i];
+	return val;
+}
+
+static unsigned int
+get32be(uchar *buf)
+{
+	unsigned int val = buf[0];
+	for(int i = 1; i < 4; i++)
+		val = (val << 8) | buf[i];
+	return val;
+}
+
+static unsigned short
+get16be(uchar *buf)
+{
+	unsigned short val = buf[0];
+	for(int i = 1; i < 2; i++)
+		val = (val << 8) | buf[i];
+	return val;
+}
+
+static void
+put32be(uchar *buf, uint val)
+{
+	buf[0] = (val >> 24) & 0xff;
+	buf[1] = (val >> 16) & 0xff;
+	buf[2] = (val >> 8) & 0xff;
+	buf[3] = val & 0xff;
+}
+
+static void
+put16be(uchar *buf, uint val)
+{
+	buf[0] = (val >> 8) & 0xff;
+	buf[1] = val & 0xff;
+}
 
 static int
 raop_rtp_parse_remote(raop_rtp_t *raop_rtp, const char *remote)
@@ -365,6 +412,33 @@ raop_rtp_process_events(raop_rtp_t *raop_rtp, void *cb_data)
 	return 0;
 }
 
+static void
+tvadd(struct timeval *sum, struct timeval *a, struct timeval *b)
+{
+	sum->tv_sec = a->tv_sec + b->tv_sec;
+	sum->tv_usec = a->tv_usec + b->tv_usec;
+	if(sum->tv_usec >= 1000000){
+		sum->tv_usec -= 1000000;
+		sum->tv_sec++;
+	}
+}
+
+static int
+tvcmp(struct timeval *a, struct timeval *b)
+{
+	int dsec = a->tv_sec - b->tv_sec;
+	int dusec = b->tv_usec - b->tv_usec;
+	if(dsec > 0)
+		return 1;
+	if(dsec < 0)
+		return -1;
+	if(dusec < 0)
+		return -1;
+	if(dusec > 0)
+		return 1;
+	return 0;
+}
+
 static THREAD_RETVAL
 raop_rtp_thread_udp(void *arg)
 {
@@ -389,10 +463,37 @@ raop_rtp_thread_udp(void *arg)
 
 	int buffering = 1;
 	int buffer_ms = 250;
+	struct timeval now, nextntp;
+	struct timeval ntprate = { .tv_sec = 0, .tv_usec = 250 };
+	gettimeofday(&now, NULL);
+	memcpy(&nextntp, &now, sizeof nextntp);
 	while(1) {
 		fd_set rfds, wfds;
-		struct timeval tv;
+		struct timeval tv, now, dt;
 		int nfds, ret;
+
+		if(tvcmp(&nextntp, &now) < 0){
+			struct sockaddr_storage timing_saddr;
+			struct sockaddr_in6 *sin6 = (struct sockaddr_in6*)&timing_saddr;
+			memcpy(&timing_saddr, &raop_rtp->control_saddr, sizeof timing_saddr);
+			sin6->sin6_port = htons(raop_rtp->timing_rport);
+
+			uchar buf[32];
+			buf[0] = 0x80;
+			buf[1] = 0x80 | 82;
+			put16be(buf+2, raop_rtp->control_seqnum);
+			put32be(buf+4, 0); // rtp_time
+			put32be(buf+8, 0); // origin ntp sec
+			put32be(buf+12, 0); // origin ntp frac
+			put32be(buf+16, 0); // receive ntp sec
+			put32be(buf+20, 0); // receive ntp frac
+			put32be(buf+24, now.tv_sec); // transmit ntp sec
+			put32be(buf+28,((unsigned long long)now.tv_usec * 4294967296) / 1000000); // transmit ntp usec
+
+			sendto(raop_rtp->tsock, buf, sizeof(buf), 0, (struct sockaddr *)&timing_saddr, raop_rtp->control_saddr_len);
+			fprintf(stderr, "sent next ntp query, %d.%06d\n", now.tv_sec, now.tv_usec);
+			tvadd(&nextntp, &now, &ntprate);
+		}
 
 		/* Check if we are still running and process callbacks */
 		if (raop_rtp_process_events(raop_rtp, cb_data)) {
@@ -436,6 +537,11 @@ raop_rtp_thread_udp(void *arg)
 
 		// block until there's something to do.
 		ret = select(nfds, &rfds, &wfds, NULL, &tv);
+
+		// update current time before we process anything..
+		// the processing might be also above this line!
+		gettimeofday(&now, NULL);
+
 		if (ret == 0) {
 			/* Timeout happened */
 			continue;
@@ -456,19 +562,65 @@ raop_rtp_thread_udp(void *arg)
 			raop_rtp->control_saddr_len = saddrlen;
 
 			if (packetlen >= 12) {
-				char type = packet[1] & ~0x80;
+				struct {
+					uchar ver;
+					uchar pad;
+					uchar ext;
+					uchar src_id_count;
+					uchar marker;
+					uchar type;
+					ushort seq;
+					unsigned int rtp_time;
+				} hdr;
 
-				logger_log(raop_rtp->logger, LOGGER_DEBUG, "Got control packet of type 0x%02x", type);
-				if (type == 0x56) {
+				hdr.ver = (packet[0] >> 6) & 0x3;
+				hdr.pad = (packet[0] >> 5) & 0x1;
+				hdr.ext = (packet[0] >> 4) & 0x1;
+				hdr.src_id_count = packet[0] & 0xf;
+				hdr.marker = packet[1] >> 7;
+				hdr.type = packet[1] & 0x7f;
+				hdr.seq = get16be(packet+2);
+				hdr.rtp_time = get32be(packet+4);
+
+				fprintf(stderr, "control packet ver %u pad %u ext %u src_id_count %u marker %u type %u seq %u time %u\n",
+					hdr.ver, hdr.pad, hdr.ext, hdr.src_id_count, hdr.marker, hdr.type, hdr.seq, hdr.rtp_time
+				);
+
+				if (hdr.type == 0x56) {
 					/* Handle resent data packet */
 					int ret = raop_buffer_queue(raop_rtp->buffer, packet+4, packetlen-4, 1);
 					assert(ret >= 0);
+				}
+				if(hdr.type == 0x54) {
+					// timing sync packet.
+					// convert ntp timestamp to seconds + nanoseconds right away.
+					unsigned int ntp_sec = get32be(packet+8);
+					unsigned int ntp_nsec = (unsigned long long)get32be(packet+12) * 1000000000ull >> 32;
+					unsigned int rtp_time = get32be(packet+16);
+					fprintf(stderr, "timing sync ntp_sec %u.%09u rtp_time %u\n",
+						ntp_sec, ntp_nsec, rtp_time
+					);
 				}
 			}
 		}
 
 		if(FD_ISSET(raop_rtp->tsock, &rfds)){
-			logger_log(raop_rtp->logger, LOGGER_INFO, "Would have timing packet in queue");
+			uchar buf[64];
+			int len;
+			saddrlen = sizeof(saddr);
+			len = recvfrom(raop_rtp->tsock, (char *)buf, sizeof buf, 0, (struct sockaddr *)&saddr, &saddrlen);
+
+			uint orig_sec = get32be(buf+8); // origin ntp sec
+			uint orig_nsec = (unsigned long long)get32be(buf+12) * 1000000000ull >> 32; // origin ntp frac
+			uint recv_sec = get32be(buf+16); // receive ntp sec
+			uint recv_nsec = (unsigned long long)get32be(buf+20) * 1000000000ull >> 32; // receive ntp frac
+			uint xmit_sec = get32be(buf+24); // transmit ntp sec
+			uint xmit_nsec = (unsigned long long)get32be(buf+28) * 1000000000ull >> 32; // transmit ntp frac
+			uint now_sec = now.tv_sec;
+			uint now_nsec = now.tv_usec * 1000;
+
+			fprintf(stderr, "got ntp replylen %d ooh!\n", len);
+			fprintf(stderr, "orig %u.%09u recv %u.%09u xmit %u.%09u now %u.%09u\n", orig_sec, orig_nsec, recv_sec, recv_nsec, xmit_sec, xmit_nsec, now_sec, now_nsec);
 		}
 
 		if(FD_ISSET(raop_rtp->dsock, &rfds)){
